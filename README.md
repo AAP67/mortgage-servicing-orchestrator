@@ -94,15 +94,6 @@ streamlit run app.py
 4. Add `ANTHROPIC_API_KEY` in Settings → Secrets
 5. Deploy
 
-## Why No Framework?
-
-Frameworks like LangChain and CrewAI provide useful abstractions, but for a demo:
-
-1. **Transparency** — every line of orchestration logic is visible and explainable
-2. **Learning** — building the patterns yourself reveals what frameworks abstract away
-3. **Signal** — shows hiring managers you understand the *why* behind multi-agent systems, not just the *how-to-import*
-
-The LangGraph version of this project is coming next for comparison.
 
 ## Sample Scenarios
 
