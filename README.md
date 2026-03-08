@@ -2,13 +2,11 @@
 
 **Multi-agent LLM orchestration for mortgage servicing analysis — built with raw Python + Claude API, no frameworks.**
 
-> Built without LangChain / CrewAI / AutoGen to demonstrate orchestration fundamentals: agent registry, DAG-based execution, parallel dispatch, shared state accumulation, structured output validation, and retry logic.
-
 ---
 
 ## What It Does
 
-Input a mortgage servicing scenario (forbearance request, refinance inquiry, escrow dispute) → the system dispatches **4 specialized AI agents** through an orchestrated pipeline → produces a unified action plan with compliance analysis, risk assessment, borrower communication, and prioritized next steps.
+Input a mortgage servicing scenario (forbearance, collections, loan modification, etc.) → the system orchestrates 5 specialized AI agents through a dependency-aware pipeline → produces a unified action plan with compliance analysis, risk assessment, borrower communication, and rubric-based quality evaluation.
 
 ## Architecture
 
@@ -18,19 +16,24 @@ Input Scenario
      ├───────────────────┐
      ▼                   ▼
 ┌───────────┐     ┌───────────┐
-│ Compliance│     │   Risk    │    ← Step 1: Parallel Execution
-│   Agent   │     │   Agent   │      (ThreadPoolExecutor)
+│ Compliance│     │   Risk    │    ← Step 1: Independent
+│   Agent   │     │   Agent   │
 └─────┬─────┘     └─────┬─────┘
       └────────┬────────┘
                ▼
       ┌──────────────┐
-      │Communication │             ← Step 2: Sequential
-      │    Agent     │               (depends on Step 1)
+      │Communication │             ← Step 2: Depends on Step 1
+      │    Agent     │
       └──────┬───────┘
              ▼
       ┌──────────────┐
-      │  Synthesis   │             ← Step 3: Sequential
-      │    Agent     │               (depends on all)
+      │  Synthesis   │             ← Step 3: Depends on all
+      │    Agent     │
+      └──────┬───────┘
+             ▼
+      ┌──────────────┐
+      │   Quality    │             ← Step 4: LLM-as-Judge
+      │   Checker    │               (rubric-based evaluation)
       └──────────────┘
 ```
 
@@ -40,19 +43,35 @@ Input Scenario
 |---------|---------------|
 | **Agent Registry** | Each agent is a dataclass with system prompt, output schema, metadata |
 | **DAG Execution** | Dependency graph drives execution order |
-| **Parallel Dispatch** | Compliance + Risk agents run via `ThreadPoolExecutor` |
 | **Shared State** | `PipelineState` dataclass accumulates outputs across agents |
-| **Structured Output** | Every agent must return valid JSON matching its schema |
+| **Structured Output** | Every agent returns validated JSON matching its schema |
 | **Retry Logic** | Up to 2 retries on JSON parse failure |
+| **LLM-as-Judge** | Quality Checker scores all outputs on a 5-dimension rubric |
 | **Status Callbacks** | Real-time UI updates via callback functions |
 | **Error Isolation** | One agent's failure doesn't crash the pipeline |
+
+## Agents
+
+1. **Compliance Agent** — federal/state regulations, disclosures, deadlines
+2. **Risk Agent** — delinquency risk, refinance eligibility, cross-sell opportunities
+3. **Communication Agent** — drafts compliant borrower letters (depends on 1 & 2)
+4. **Synthesis Agent** — unified action plan with conflict detection (depends on 1, 2, 3)
+5. **Quality Checker** — rubric-based evaluation across accuracy, completeness, consistency, communication quality, and actionability (depends on all)
+
+## Scenarios
+
+12 scenarios across 4 segments:
+
+- **Servicer** — forbearance, refinance, escrow shortage, early payoff
+- **Collections** — pre-foreclosure, debt validation disputes, deficiency judgment, third-party collector handoff
+- **Originator** — servicing transfer, VA loan assumption
+- **Investor/GSE** — loan modification, FHA partial claim
 
 ## Tech Stack
 
 - **Python** — orchestration engine
 - **Claude API (Sonnet)** — agent LLM backend
 - **Streamlit** — interactive UI with live pipeline tracker
-- **No orchestration framework** — demonstrates understanding of underlying patterns
 
 ## Project Structure
 
@@ -63,44 +82,21 @@ Input Scenario
 ├── app.py             # Streamlit UI
 ├── requirements.txt
 └── .streamlit/
-    ├── config.toml
-    └── secrets.toml.example
+    └── config.toml
 ```
 
 ## Setup
 
-### Local Development
-
 ```bash
-# Clone
-git clone https://github.com/<your-username>/mortgage-servicing-orchestrator.git
-cd mortgage-servicing-orchestrator
-
-# Install
 pip install -r requirements.txt
-
-# Set API key
 export ANTHROPIC_API_KEY="sk-ant-..."
-
-# Run
 streamlit run app.py
 ```
 
 ### Deploy to Streamlit Cloud
 
-1. Push this repo to GitHub
+1. Push repo to GitHub
 2. Go to [share.streamlit.io](https://share.streamlit.io)
-3. Connect your GitHub repo → select `app.py`
+3. Connect repo → select `app.py`
 4. Add `ANTHROPIC_API_KEY` in Settings → Secrets
 5. Deploy
-
-
-## Sample Scenarios
-
-- **Forbearance Request (TX)** — borrower lost job, missed 2 payments, requesting relief
-- **Refinance Inquiry (CA)** — strong borrower exploring rate reduction and cash-out
-- **Escrow Shortage (FL)** — insurance premium spike causing payment shock for fixed-income borrowers
-
----
-
-*Built by [Your Name] — UC Berkeley Haas MBA '25*
