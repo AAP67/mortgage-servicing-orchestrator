@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from typing import Optional, Callable, Any
 from anthropic import Anthropic
 
-from agents import AgentDef, COMPLIANCE, RISK, COMMUNICATION, SYNTHESIS
+from agents import AgentDef, COMPLIANCE, RISK, COMMUNICATION, SYNTHESIS, QUALITY_CHECKER
 
 # ── Client setup ───────────────────────────────────────────────────
 client = Anthropic()                     # reads ANTHROPIC_API_KEY from env
@@ -45,6 +45,7 @@ class PipelineState:
     risk: dict                  = field(default_factory=dict)
     communication: dict         = field(default_factory=dict)
     synthesis: dict             = field(default_factory=dict)
+    quality_check: dict         = field(default_factory=dict)
     results: list[AgentResult]  = field(default_factory=list)
     total_duration_s: float     = 0.0
 
@@ -192,20 +193,17 @@ def run_pipeline(
     state = PipelineState(scenario=scenario)
     base_prompt = _scenario_to_prompt(scenario)
 
-    # ── Step 1: Compliance + Risk in parallel ──────────────────
+    # ── Step 1: Compliance + Risk ─────────────────────────────
+    #   NOTE: These two agents are independent (no data dependency)
+    #   and *could* run in parallel with ThreadPoolExecutor.
+    #   We run them sequentially here because Streamlit's UI
+    #   callbacks are not thread-safe. In a production FastAPI
+    #   backend you would use asyncio.gather() or threads.
     if cb:
-        cb("Step 1", "parallel", 0)
+        cb("Step 1", "starting", 0)
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-        future_compliance = pool.submit(
-            run_agent, COMPLIANCE, base_prompt, 2, cb,
-        )
-        future_risk = pool.submit(
-            run_agent, RISK, base_prompt, 2, cb,
-        )
-
-        compliance_result = future_compliance.result()
-        risk_result = future_risk.result()
+    compliance_result = run_agent(COMPLIANCE, base_prompt, 2, cb)
+    risk_result = run_agent(RISK, base_prompt, 2, cb)
 
     state.compliance = compliance_result.output
     state.risk = risk_result.output
@@ -239,6 +237,22 @@ def run_pipeline(
     synth_result = run_agent(SYNTHESIS, synth_prompt, 2, cb)
     state.synthesis = synth_result.output
     state.results.append(synth_result)
+
+    # ── Step 4: Quality Checker (depends on all) ───────────────
+    if cb:
+        cb("Step 4", "sequential", 0)
+
+    qc_prompt = (
+        f"{base_prompt}\n\n"
+        f"── COMPLIANCE AGENT OUTPUT ──\n{json.dumps(state.compliance, indent=2)}\n\n"
+        f"── RISK AGENT OUTPUT ──\n{json.dumps(state.risk, indent=2)}\n\n"
+        f"── COMMUNICATION AGENT OUTPUT ──\n{json.dumps(state.communication, indent=2)}\n\n"
+        f"── SYNTHESIS AGENT OUTPUT ──\n{json.dumps(state.synthesis, indent=2)}"
+    )
+
+    qc_result = run_agent(QUALITY_CHECKER, qc_prompt, 2, cb)
+    state.quality_check = qc_result.output
+    state.results.append(qc_result)
 
     state.total_duration_s = round(time.time() - pipeline_start, 2)
 

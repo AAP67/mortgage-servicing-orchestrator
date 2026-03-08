@@ -10,7 +10,7 @@ Displays:
 
 import streamlit as st
 import json
-from scenarios import SCENARIOS
+from scenarios import SCENARIOS, SCENARIO_GROUPS
 from agents import ALL_AGENTS
 from orchestrator import run_pipeline, PipelineState
 
@@ -71,25 +71,30 @@ with st.expander("⚙️  How the orchestration works"):
          ├───────────────────┐
          ▼                   ▼
     ┌───────────┐     ┌───────────┐
-    │ Compliance│     │   Risk    │    ← Step 1: Parallel
+    │ Compliance│     │   Risk    │    ← Step 1: Independent
     │   Agent   │     │   Agent   │
     └─────┬─────┘     └─────┬─────┘
           └────────┬────────┘
                    ▼
           ┌──────────────┐
-          │Communication │             ← Step 2: Sequential
+          │Communication │             ← Step 2: Depends on Step 1
           │    Agent     │
           └──────┬───────┘
                  ▼
           ┌──────────────┐
-          │  Synthesis   │             ← Step 3: Sequential
+          │  Synthesis   │             ← Step 3: Depends on all
           │    Agent     │
+          └──────┬───────┘
+                 ▼
+          ┌──────────────┐
+          │   Quality    │             ← Step 4: Judge LLM
+          │   Checker    │               (rubric-based evaluation)
           └──────────────┘
     """, language=None)
     st.markdown("""
     **Patterns demonstrated:** Agent registry · DAG execution · Parallel dispatch ·
     Shared state accumulation · Structured JSON output validation · Retry logic ·
-    Real-time status callbacks
+    Real-time status callbacks · **LLM-as-Judge (rubric-based evaluation)**
     """)
 
 st.divider()
@@ -100,20 +105,35 @@ col_left, col_right = st.columns([3, 2], gap="large")
 # ── Scenario selection ─────────────────────────────────────────────
 with col_left:
     st.subheader("📋 Scenario")
+
+    # Build grouped options for dropdown
+    grouped_options = ["— select —"]
+    for group_label, keys in SCENARIO_GROUPS.items():
+        grouped_options.append(f"── {group_label} ──")
+        grouped_options.extend(keys)
+    grouped_options.append("✏️ Custom")
+
     choice = st.selectbox(
         "Pick a scenario",
-        ["— select —"] + list(SCENARIOS.keys()) + ["✏️ Custom"],
+        grouped_options,
         label_visibility="collapsed",
     )
+
+    # Ignore group headers
+    if choice.startswith("──"):
+        choice = "— select —"
 
     scenario = None
 
     if choice in SCENARIOS:
         scenario = SCENARIOS[choice]
-        c1, c2, c3 = st.columns(3)
+        seg = scenario.get("segment", "")
+        c1, c2 = st.columns(2)
         c1.metric("Borrower", scenario["borrower_name"])
-        c2.metric("State", scenario["state"])
-        c3.metric("Rate", scenario["interest_rate"])
+        c2.metric("Segment", seg)
+        c3, c4 = st.columns(2)
+        c3.metric("State", scenario["state"])
+        c4.metric("Rate", scenario["interest_rate"])
         st.info(f"**Situation:** {scenario['situation']}")
         with st.expander("Full scenario JSON"):
             st.json(scenario)
@@ -207,8 +227,8 @@ if st.button("🚀  Run Pipeline", type="primary", disabled=run_disabled, use_co
     st.divider()
     st.subheader("📑 Results")
 
-    tab_synth, tab_compliance, tab_risk, tab_comm, tab_raw = st.tabs([
-        "🧩 Synthesis", "📜 Compliance", "📊 Risk", "✉️ Communication", "🗂 Raw JSON"
+    tab_synth, tab_compliance, tab_risk, tab_comm, tab_qc, tab_raw = st.tabs([
+        "🧩 Synthesis", "📜 Compliance", "📊 Risk", "✉️ Communication", "🔍 Quality Check", "🗂 Raw JSON"
     ])
 
     # ── Synthesis tab ──────────────────────────────────────────
@@ -316,6 +336,77 @@ if st.button("🚀  Run Pipeline", type="primary", disabled=run_disabled, use_co
                 for f in cm["follow_up_actions"]:
                     st.write(f"- [{f.get('owner','')}] {f['action']} — *{f.get('deadline','')}*")
 
+    # ── Quality Check tab ────────────────────────────────────
+    with tab_qc:
+        qc = state.quality_check
+        if "error" in qc:
+            st.error(f"Quality Checker failed: {qc['error']}")
+        else:
+            # Overall score header
+            score = qc.get("overall_quality_score", "?")
+            score_color = "🟢" if isinstance(score, int) and score >= 8 else "🟡" if isinstance(score, int) and score >= 5 else "🔴"
+            st.markdown(f"### {score_color} Overall Quality Score: {score}/10")
+            st.markdown(f"_{qc.get('summary', '')}_")
+
+            # Rubric scores
+            rubric = qc.get("rubric_scores", {})
+            if rubric:
+                st.markdown("**Rubric Scores**")
+                dims = ["accuracy", "completeness", "consistency", "communication_quality", "actionability"]
+                labels = ["Accuracy", "Completeness", "Consistency", "Communication", "Actionability"]
+                cols = st.columns(5)
+                for i, (dim, label) in enumerate(zip(dims, labels)):
+                    dim_data = rubric.get(dim, {})
+                    dim_score = dim_data.get("score", "?")
+                    dim_icon = "🟢" if isinstance(dim_score, int) and dim_score >= 8 else "🟡" if isinstance(dim_score, int) and dim_score >= 5 else "🔴"
+                    cols[i].metric(f"{dim_icon} {label}", f"{dim_score}/10")
+
+                # Justifications
+                with st.expander("Score justifications"):
+                    for dim, label in zip(dims, labels):
+                        dim_data = rubric.get(dim, {})
+                        st.write(f"**{label} ({dim_data.get('score', '?')}/10):** {dim_data.get('justification', '-')}")
+
+            # Issues
+            issues = qc.get("issues", [])
+            if issues:
+                st.markdown(f"**Issues Found ({len(issues)})**")
+                for issue in issues:
+                    sev = issue.get("severity", "minor")
+                    sev_icon = {"critical": "🔴", "major": "🟠", "minor": "🟡"}.get(sev, "⚪")
+                    with st.expander(f"{sev_icon} [{sev.upper()}] {issue.get('agent', '?')} — {issue.get('description', '')[:80]}"):
+                        st.write(f"**Category:** {issue.get('category', '-')}")
+                        st.write(f"**Evidence from output:** {issue.get('evidence', '-')}")
+                        st.write(f"**Ground truth (scenario):** {issue.get('ground_truth', '-')}")
+                        st.write(f"**Suggested fix:** {issue.get('suggested_fix', '-')}")
+            else:
+                st.success("No issues found.")
+
+            # Contradictions
+            contradictions = qc.get("contradictions", [])
+            if contradictions:
+                st.markdown("**⚠️ Contradictions Between Agents**")
+                for c in contradictions:
+                    st.warning(
+                        f"**{c.get('agent_1', '?')}** says: _{c.get('agent_1_says', '-')}_\n\n"
+                        f"**{c.get('agent_2', '?')}** says: _{c.get('agent_2_says', '-')}_\n\n"
+                        f"**Verdict:** {c.get('which_is_correct', '-')}"
+                    )
+
+            # Missing items
+            missing = qc.get("missing_items", [])
+            if missing:
+                st.markdown("**📋 Missing Items**")
+                for m in missing:
+                    st.write(f"- **{m.get('responsible_agent', '?')}** — {m.get('what_is_missing', '-')} _{m.get('why_it_matters', '')}_")
+
+            # Strengths
+            strengths = qc.get("strengths", [])
+            if strengths:
+                st.markdown("**✅ Strengths**")
+                for s_item in strengths:
+                    st.write(f"- {s_item}")
+
     # ── Raw JSON tab ───────────────────────────────────────────
     with tab_raw:
         st.json({
@@ -323,6 +414,7 @@ if st.button("🚀  Run Pipeline", type="primary", disabled=run_disabled, use_co
             "risk": state.risk,
             "communication": state.communication,
             "synthesis": state.synthesis,
+            "quality_check": state.quality_check,
             "pipeline_metrics": {
                 "total_duration_s": state.total_duration_s,
                 "agent_results": [
